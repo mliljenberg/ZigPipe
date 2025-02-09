@@ -1,0 +1,51 @@
+# Zig build artifacts
+zig-cache/
+.zig-cache/
+zig-out/
+
+
+
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.so
+*.dylib
+
+# Zig specific
+*.zig-build-tmp
+
+# Editor/IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Dependency directories (if you're using a package manager)
+deps/
+
+# Test coverage reports
+*.lcov
+
+
+# Any local configuration files
+*.local
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# If you use any other tools or have project-specific files to ignore, add them here
