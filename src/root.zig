@@ -1,19 +1,44 @@
 const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
+const MPSCRingBuffer = @import("mpsc_shm_ringbuf.zig").MPSCRingBuffer;
+const SPMCRingBuffer = @import("spmc_shm_ringbuf.zig").SPMCRingBuffer;
+const RingBufferType = @import("ringbuf.zig").RingBufferType;
 
 const Role = enum { master, worker, not_connected };
 
+const Message = struct {};
 threadlocal var worker: ?u8 = null;
 threadlocal var role: Role = .not_connected;
+const mpsc_path = "/mpsc_buffer";
 
-/// Sets up a new instance of ZigPipe
-export fn create(max_num_workers: usize) !void {
+/// Sets up a new instance of ZigPipe this makes you master needs to be no other master.
+export fn init() !void {
+    //FIXME: Add a check for if there is another master.
     if (role != .not_connected) {
         return error.AlreadyConnectedToCluster;
     }
     role = .master;
-    _ = max_num_workers;
+    var mspc_buffer = try MPSCRingBuffer(Message, 1000, .Consumer, mpsc_path).init();
+    defer mspc_buffer.deinit();
+    var spmc_buffer = try SPMCRingBuffer(Message, 1000, .Producer, mpsc_path).init();
+    defer spmc_buffer.deinit();
+    var buffer = RingBufferType(Message, 1000);
+
+    // Main event loop
+    while (true) {
+        if (!spmc_buffer.full) {
+            if (buffer.head()) |item| {
+                spmc_buffer.push(item);
+                buffer.advance_head();
+            }
+        } else if (!buffer.is_full) {
+            if (mspc_buffer.pop()) |item| {
+                buffer.push(item);
+                mspc_buffer.advance_tail();
+            }
+        }
+    }
 }
 
 const ExternalAddress = struct {

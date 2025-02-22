@@ -14,8 +14,7 @@ const UserType = enum {
 
 const NO_RESERVATION_VALUE: u64 = std.math.maxInt(u64);
 
-pub fn ShmRingBuffer(comptime T: type, comptime len: usize, comptime user_type: UserType, comptime max_producers: u64, path: [*:0]const u8) type {
-    assert(max_producers > 0);
+pub fn MPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type: UserType, path: [*:0]const u8) type {
     comptime {
         const header_size = @sizeOf(Atomic(u64)) + @sizeOf(u64) + @sizeOf(Atomic(u64)) + @sizeOf(Atomic(u64));
         const data_size = @sizeOf(T) * len + header_size;
@@ -116,7 +115,7 @@ test "mpsc" {
         id: usize,
         data: [1000]u8,
     };
-    var consumer = try ShmRingBuffer(TestStruct, 1000, .Consumer, 4, "/test-buff").init();
+    var consumer = try MPSCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff-1").init();
     defer consumer.deinit();
     var list: [4]std.Thread = undefined;
     for (0..4) |i| {
@@ -143,12 +142,87 @@ test "mpsc" {
     try std.testing.expectError(error.Empty, mes);
 }
 
+test "basic_functionality" {
+    const TestStruct = struct {
+        id: usize,
+        data: [1000]u8,
+    };
+
+    // Initialize consumer and producer
+    var consumer = try MPSCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff").init();
+    defer consumer.deinit();
+    var producer = try MPSCRingBuffer(TestStruct, 1000, .Producer, "/test-buff").init();
+    defer producer.deinit();
+
+    // Test 1: Basic push and consume
+    try producer.push(TestStruct{ .id = 1, .data = std.mem.zeroes([1000]u8) });
+    try producer.push(TestStruct{ .id = 2, .data = std.mem.zeroes([1000]u8) });
+    try producer.push(TestStruct{ .id = 3, .data = std.mem.zeroes([1000]u8) });
+
+    try expect((try consumer.get_tail()).id == 1);
+    try expect((try consumer.get_tail()).id == 2);
+    try expect((try consumer.get_tail()).id == 3);
+
+    // Test 2: Empty buffer behavior
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 3: Fill buffer to capacity
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        try producer.push(TestStruct{
+            .id = i + 100,
+            .data = std.mem.zeroes([1000]u8),
+        });
+    }
+
+    // Test 4: Buffer full behavior
+    try std.testing.expectError(error.Full, producer.push(TestStruct{
+        .id = 9999,
+        .data = std.mem.zeroes([1000]u8),
+    }));
+
+    // Test 5: Consume all items
+    i = 0;
+    while (i < 1000) : (i += 1) {
+        const item = try consumer.get_tail();
+        try expect(item.id == i + 100);
+    }
+
+    // Test 6: Verify buffer is empty again
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 7: Push-consume alternation
+    try producer.push(TestStruct{ .id = 42, .data = std.mem.zeroes([1000]u8) });
+    const item = try consumer.get_tail();
+    try expect(item.id == 42);
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 8: Multiple pushes followed by multiple consumes
+    const test_count = 10;
+    i = 0;
+    while (i < test_count) : (i += 1) {
+        try producer.push(TestStruct{
+            .id = i + 1000,
+            .data = std.mem.zeroes([1000]u8),
+        });
+    }
+
+    i = 0;
+    while (i < test_count) : (i += 1) {
+        const consumed = try consumer.get_tail();
+        try expect(consumed.id == i + 1000);
+    }
+
+    // Test 9: Verify final empty state
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+}
+
 fn basic_test_thread() !void {
     const TestStruct = struct {
         id: usize,
         data: [1000]u8,
     };
-    var producer = try ShmRingBuffer(TestStruct, 1000, .Producer, 4, "/test-buff").init();
+    var producer = try MPSCRingBuffer(TestStruct, 1000, .Producer, "/test-buff-1").init();
     // assert(producer.tail_idx.* == 0);
     // assert(producer.head_idx.* == 0);
     defer producer.deinit();

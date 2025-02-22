@@ -11,7 +11,7 @@ const UserType = enum {
 };
 
 /// Single Consumer single Producer Shared memory ringbuffer.
-pub fn SPSCShmRingBuffer(comptime T: type, comptime len: usize, comptime user_type: UserType) type {
+pub fn SPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type: UserType, path: [*:0]const u8) type {
     return struct {
         const Self = @This();
         tail_idx: *u64 = undefined,
@@ -24,7 +24,7 @@ pub fn SPSCShmRingBuffer(comptime T: type, comptime len: usize, comptime user_ty
         shm: shared_mem.SharedMem(T, len),
 
         pub fn init() !Self {
-            var shm = shared_mem.SharedMem(T, len){ .master = user_type == .Consumer, .path = "/shm_ring_buffer" };
+            var shm = shared_mem.SharedMem(T, len){ .master = user_type == .Producer, .path = path };
             const mmap = try shm.open();
             errdefer shm.deinit();
             const header_size = @sizeOf(u64);
@@ -173,9 +173,9 @@ test "basic test" {
     const TestStruct = struct {
         id: i32,
     };
-    var consumer = try SPSCShmRingBuffer(TestStruct, 10, UserType.Consumer).init();
+    var consumer = try SPSCRingBuffer(TestStruct, 10, UserType.Consumer, "/basic_test").init();
     defer consumer.deinit();
-    var producer = try SPSCShmRingBuffer(TestStruct, 10, UserType.Producer).init();
+    var producer = try SPSCRingBuffer(TestStruct, 10, UserType.Producer, "/basic_test").init();
     defer producer.deinit();
     try producer.push(.{ .id = 1 });
     try producer.push(.{ .id = 2 });
@@ -224,9 +224,9 @@ test "basic threaded test" {
     const TestStruct = struct {
         id: i32,
     };
-    var consumer = try SPSCShmRingBuffer(TestStruct, 10, UserType.Consumer).init();
-    defer consumer.deinit();
     const thread = try std.Thread.spawn(.{}, basic_thread, .{});
+    var consumer = try SPSCRingBuffer(TestStruct, 10, UserType.Consumer, "/basic_thread_test").init();
+    defer consumer.deinit();
     thread.join();
 
     const c_message = try consumer.get(0);
@@ -243,7 +243,7 @@ fn basic_thread() !void {
     const TestStruct = struct {
         id: i32,
     };
-    var producer = try SPSCShmRingBuffer(TestStruct, 10, UserType.Producer).init();
+    var producer = try SPSCRingBuffer(TestStruct, 10, UserType.Producer, "/basic_thread_test").init();
     defer producer.deinit();
     try producer.push(.{ .id = 1 });
     try producer.push(.{ .id = 2 });
@@ -253,7 +253,9 @@ test "overflow test" {
     const TestStruct = struct {
         id: i32,
     };
-    var consumer = try SPSCShmRingBuffer(TestStruct, 10, UserType.Consumer).init();
+    var producer = try SPSCRingBuffer(TestStruct, 10, UserType.Producer, "/overflow-test").init();
+    defer producer.deinit();
+    var consumer = try SPSCRingBuffer(TestStruct, 10, UserType.Consumer, "/overflow-test").init();
     defer consumer.deinit();
     consumer.head_idx.* = std.math.maxInt(@TypeOf(consumer.head_idx.*));
     consumer.tail_idx.* = std.math.maxInt(@TypeOf(consumer.head_idx.*));
@@ -261,8 +263,6 @@ test "overflow test" {
     const post_remainder_base = std.math.maxInt(@TypeOf(consumer.head_idx.*)) % consumer.len;
     try expect(consumer.head_idx.* == std.math.maxInt(@TypeOf(consumer.head_idx.*)));
 
-    var producer = try SPSCShmRingBuffer(TestStruct, 10, UserType.Producer).init();
-    defer producer.deinit();
     try producer.push(.{ .id = 1 });
     try expect(consumer.head_idx.* == post_remainder_base + 1);
     try expect(consumer.tail_idx.* == post_remainder_base);
@@ -281,4 +281,78 @@ test "overflow test" {
 
     try expect(consumer.head_idx.* == post_remainder_base + new_items.len);
     try expect(consumer.tail_idx.* == post_remainder_base);
+}
+test "basic_functionality" {
+    const TestStruct = struct {
+        id: usize,
+        data: [1000]u8,
+    };
+
+    // Initialize consumer and producer
+    var producer = try SPSCRingBuffer(TestStruct, 1000, .Producer, "/test-buff").init();
+    defer producer.deinit();
+    var consumer = try SPSCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff").init();
+    defer consumer.deinit();
+
+    // Test 1: Basic push and consume
+    try producer.push(TestStruct{ .id = 1, .data = std.mem.zeroes([1000]u8) });
+    try producer.push(TestStruct{ .id = 2, .data = std.mem.zeroes([1000]u8) });
+    try producer.push(TestStruct{ .id = 3, .data = std.mem.zeroes([1000]u8) });
+
+    try expect((try consumer.get_tail()).id == 1);
+    try expect((try consumer.get_tail()).id == 2);
+    try expect((try consumer.get_tail()).id == 3);
+
+    // Test 2: Empty buffer behavior
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 3: Fill buffer to capacity
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        try producer.push(TestStruct{
+            .id = i + 100,
+            .data = std.mem.zeroes([1000]u8),
+        });
+    }
+
+    // Test 4: Buffer full behavior
+    try std.testing.expectError(error.Full, producer.push(TestStruct{
+        .id = 9999,
+        .data = std.mem.zeroes([1000]u8),
+    }));
+
+    // Test 5: Consume all items
+    i = 0;
+    while (i < 1000) : (i += 1) {
+        const item = try consumer.get_tail();
+        try expect(item.id == i + 100);
+    }
+
+    // Test 6: Verify buffer is empty again
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 7: Push-consume alternation
+    try producer.push(TestStruct{ .id = 42, .data = std.mem.zeroes([1000]u8) });
+    const item = try consumer.get_tail();
+    try expect(item.id == 42);
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 8: Multiple pushes followed by multiple consumes
+    const test_count = 10;
+    i = 0;
+    while (i < test_count) : (i += 1) {
+        try producer.push(TestStruct{
+            .id = i + 1000,
+            .data = std.mem.zeroes([1000]u8),
+        });
+    }
+
+    i = 0;
+    while (i < test_count) : (i += 1) {
+        const consumed = try consumer.get_tail();
+        try expect(consumed.id == i + 1000);
+    }
+
+    // Test 9: Verify final empty state
+    try std.testing.expectError(error.Empty, consumer.get_tail());
 }

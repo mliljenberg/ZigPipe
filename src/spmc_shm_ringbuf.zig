@@ -15,7 +15,7 @@ const UserType = enum {
 const NO_RESERVATION_VALUE: u64 = std.math.maxInt(u64);
 const COUNT_LIMIT: u32 = 10_000;
 
-pub fn ShmRingBuffer(comptime T: type, comptime len: usize, comptime user_type: UserType, path: [*:0]const u8) type {
+pub fn SPMCRingBuffer(comptime T: type, comptime len: usize, comptime user_type: UserType, path: [*:0]const u8) type {
     comptime {
         const header_size = @sizeOf(Atomic(u64)) + @sizeOf(u64) + @sizeOf(Atomic(u64)) + @sizeOf(Atomic(u64));
         const data_size = @sizeOf(T) * len + header_size;
@@ -102,9 +102,13 @@ pub fn ShmRingBuffer(comptime T: type, comptime len: usize, comptime user_type: 
         pub fn push(self: *Self, item: T) error{Full}!void {
             assert(user_type == .Producer);
             if (self.head_idx.* == (self.tail_idx.*.load(.acquire) + self.len)) return error.Full;
-            self.head_idx.* += 1;
             assert(self.head_idx.* <= (self.tail_idx.*.load(.acquire) + self.len));
             self.buffer[self.head_idx.* % self.len] = item;
+            self.head_idx.* += 1;
+        }
+
+        pub fn full(self: Self) bool {
+            return self.head_idx.* == (self.tail_idx.*.load(.acquire));
         }
     };
 }
@@ -116,9 +120,9 @@ test "spmc" {
         data: [1000]u8,
     };
     const path = "/shm_ring_test_shm";
-    var producer = try ShmRingBuffer(TestStruct, 1000, .Producer, path).init();
+    var producer = try SPMCRingBuffer(TestStruct, 1000, .Producer, path).init();
 
-    var consumer = try ShmRingBuffer(TestStruct, 1000, .Consumer, path).init();
+    var consumer = try SPMCRingBuffer(TestStruct, 1000, .Consumer, path).init();
     defer producer.deinit();
     var list: [4]std.Thread = undefined;
     for (0..4) |i| {
@@ -151,7 +155,7 @@ fn basic_consumer_test_thread() !void {
     };
 
     const path = "/shm_ring_test_shm";
-    var consumer = try ShmRingBuffer(TestStruct, 1000, .Consumer, path).init();
+    var consumer = try SPMCRingBuffer(TestStruct, 1000, .Consumer, path).init();
     var sum: u64 = 0;
     while (count < 1000) {
         const message = consumer.get_tail() catch {
@@ -161,4 +165,79 @@ fn basic_consumer_test_thread() !void {
         count += 1;
     }
     try expect(count == 1000);
+}
+
+test "basic_functionality" {
+    const TestStruct = struct {
+        id: usize,
+        data: [1000]u8,
+    };
+
+    // Initialize consumer and producer
+    var producer = try SPMCRingBuffer(TestStruct, 1000, .Producer, "/test-buff").init();
+    defer producer.deinit();
+    var consumer = try SPMCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff").init();
+    defer consumer.deinit();
+
+    // Test 1: Basic push and consume
+    try producer.push(TestStruct{ .id = 1, .data = std.mem.zeroes([1000]u8) });
+    try producer.push(TestStruct{ .id = 2, .data = std.mem.zeroes([1000]u8) });
+    try producer.push(TestStruct{ .id = 3, .data = std.mem.zeroes([1000]u8) });
+
+    try expect((try consumer.get_tail()).id == 1);
+    try expect((try consumer.get_tail()).id == 2);
+    try expect((try consumer.get_tail()).id == 3);
+
+    // Test 2: Empty buffer behavior
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 3: Fill buffer to capacity
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        try producer.push(TestStruct{
+            .id = i + 100,
+            .data = std.mem.zeroes([1000]u8),
+        });
+    }
+
+    // Test 4: Buffer full behavior
+    try std.testing.expectError(error.Full, producer.push(TestStruct{
+        .id = 9999,
+        .data = std.mem.zeroes([1000]u8),
+    }));
+
+    // Test 5: Consume all items
+    i = 0;
+    while (i < 1000) : (i += 1) {
+        const item = try consumer.get_tail();
+        try expect(item.id == i + 100);
+    }
+
+    // Test 6: Verify buffer is empty again
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 7: Push-consume alternation
+    try producer.push(TestStruct{ .id = 42, .data = std.mem.zeroes([1000]u8) });
+    const item = try consumer.get_tail();
+    try expect(item.id == 42);
+    try std.testing.expectError(error.Empty, consumer.get_tail());
+
+    // Test 8: Multiple pushes followed by multiple consumes
+    const test_count = 10;
+    i = 0;
+    while (i < test_count) : (i += 1) {
+        try producer.push(TestStruct{
+            .id = i + 1000,
+            .data = std.mem.zeroes([1000]u8),
+        });
+    }
+
+    i = 0;
+    while (i < test_count) : (i += 1) {
+        const consumed = try consumer.get_tail();
+        try expect(consumed.id == i + 1000);
+    }
+
+    // Test 9: Verify final empty state
+    try std.testing.expectError(error.Empty, consumer.get_tail());
 }

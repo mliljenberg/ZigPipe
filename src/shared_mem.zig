@@ -25,6 +25,7 @@ pub fn SharedMem(comptime T: type, comptime num_items: usize) type {
         master: bool = false,
         fd: c_int = undefined,
 
+        /// Creates a shared memory object. also creates the shared memory file if master is true.
         pub fn open(
             self: *Self,
         ) SharedMemError![*]align(mem.page_size) u8 {
