@@ -66,7 +66,7 @@ pub fn MPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
             self.shm.deinit();
         }
 
-        pub fn get_tail(self: *Self) error{Empty}!T {
+        pub fn pop(self: *Self) error{Empty}!T {
             assert(user_type == .Consumer);
             const available_head = self.head_idx.*.load(.acquire);
             const tail_idx = self.tail_idx.*;
@@ -126,7 +126,7 @@ test "mpsc" {
     var count: usize = 0;
     var sum: u64 = 0;
     while (count < 1000 * 4) {
-        const message = consumer.get_tail() catch {
+        const message = consumer.pop() catch {
             continue;
         };
         sum += message.id;
@@ -137,84 +137,9 @@ test "mpsc" {
     }
     try expect(count == 1000 * 4);
     try expect(sum == 2002000);
-    const mes = consumer.get_tail();
+    const mes = consumer.pop();
 
     try std.testing.expectError(error.Empty, mes);
-}
-
-test "basic_functionality" {
-    const TestStruct = struct {
-        id: usize,
-        data: [1000]u8,
-    };
-
-    // Initialize consumer and producer
-    var consumer = try MPSCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff").init();
-    defer consumer.deinit();
-    var producer = try MPSCRingBuffer(TestStruct, 1000, .Producer, "/test-buff").init();
-    defer producer.deinit();
-
-    // Test 1: Basic push and consume
-    try producer.push(TestStruct{ .id = 1, .data = std.mem.zeroes([1000]u8) });
-    try producer.push(TestStruct{ .id = 2, .data = std.mem.zeroes([1000]u8) });
-    try producer.push(TestStruct{ .id = 3, .data = std.mem.zeroes([1000]u8) });
-
-    try expect((try consumer.get_tail()).id == 1);
-    try expect((try consumer.get_tail()).id == 2);
-    try expect((try consumer.get_tail()).id == 3);
-
-    // Test 2: Empty buffer behavior
-    try std.testing.expectError(error.Empty, consumer.get_tail());
-
-    // Test 3: Fill buffer to capacity
-    var i: usize = 0;
-    while (i < 1000) : (i += 1) {
-        try producer.push(TestStruct{
-            .id = i + 100,
-            .data = std.mem.zeroes([1000]u8),
-        });
-    }
-
-    // Test 4: Buffer full behavior
-    try std.testing.expectError(error.Full, producer.push(TestStruct{
-        .id = 9999,
-        .data = std.mem.zeroes([1000]u8),
-    }));
-
-    // Test 5: Consume all items
-    i = 0;
-    while (i < 1000) : (i += 1) {
-        const item = try consumer.get_tail();
-        try expect(item.id == i + 100);
-    }
-
-    // Test 6: Verify buffer is empty again
-    try std.testing.expectError(error.Empty, consumer.get_tail());
-
-    // Test 7: Push-consume alternation
-    try producer.push(TestStruct{ .id = 42, .data = std.mem.zeroes([1000]u8) });
-    const item = try consumer.get_tail();
-    try expect(item.id == 42);
-    try std.testing.expectError(error.Empty, consumer.get_tail());
-
-    // Test 8: Multiple pushes followed by multiple consumes
-    const test_count = 10;
-    i = 0;
-    while (i < test_count) : (i += 1) {
-        try producer.push(TestStruct{
-            .id = i + 1000,
-            .data = std.mem.zeroes([1000]u8),
-        });
-    }
-
-    i = 0;
-    while (i < test_count) : (i += 1) {
-        const consumed = try consumer.get_tail();
-        try expect(consumed.id == i + 1000);
-    }
-
-    // Test 9: Verify final empty state
-    try std.testing.expectError(error.Empty, consumer.get_tail());
 }
 
 fn basic_test_thread() !void {

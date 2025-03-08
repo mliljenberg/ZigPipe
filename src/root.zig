@@ -1,16 +1,36 @@
 const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
-const MPSCRingBuffer = @import("mpsc_shm_ringbuf.zig").MPSCRingBuffer;
-const SPMCRingBuffer = @import("spmc_shm_ringbuf.zig").SPMCRingBuffer;
+const print = std.debug.print;
+const MPSCRingBuffer = @import("shm/mpsc_shm_ringbuf.zig").MPSCRingBuffer;
+const SPMCRingBuffer = @import("shm/spmc_shm_ringbuf.zig").SPMCRingBuffer;
 const RingBufferType = @import("ringbuf.zig").RingBufferType;
+const print_err = std.io.getStdErr().writer().write;
 
-const Role = enum { master, worker, not_connected };
+const Role = enum {
+    master,
+    worker,
+    not_connected,
+};
 
 const Message = struct {};
 threadlocal var worker: ?u8 = null;
 threadlocal var role: Role = .not_connected;
 const mpsc_path = "/mpsc_buffer";
+
+const StateMachine = enum {
+    const Self = @This();
+    flush,
+    store,
+    fill,
+    fn next(self: *Self) StateMachine {
+        switch (self) {
+            .flush => return .fill,
+            .fill => return .store,
+            .store => return .flush,
+        }
+    }
+};
 
 /// Sets up a new instance of ZigPipe this makes you master needs to be no other master.
 export fn init() !void {
@@ -26,23 +46,38 @@ export fn init() !void {
     var buffer = RingBufferType(Message, 1000);
 
     // Main event loop
+    var sleep_counter: usize = 0;
     while (true) {
-        if (!spmc_buffer.full) {
+        if (sleep_counter > 1000) {
+            print_err("Seems like we are in a deadlock");
+            return error.DeadLockError; // FIXME: How can we handle this error?
+        }
+        if (!spmc_buffer.full() and !buffer.empty()) {
             if (buffer.head()) |item| {
                 spmc_buffer.push(item);
                 buffer.advance_head();
+                sleep_counter = 0;
             }
-        } else if (!buffer.is_full) {
+        } else if (!buffer.full) {
             if (mspc_buffer.pop()) |item| {
                 buffer.push(item);
                 mspc_buffer.advance_tail();
+                sleep_counter = 0;
+            } else |err| {
+                //buffer is empty
+                print("Buffer is empty, sleeping, {any}", .{err});
+                std.time.sleep(50_000); // Sleep for 50 ms
+                sleep_counter = 0;
             }
+        } else {
+            print("Both sides full, sleeping", .{});
+            sleep_counter += 1;
+            std.time.sleep(10_000); // Sleep for 10 ms
         }
     }
 }
 
 const ExternalAddress = struct {
-    url: []const ?u8,
     ip_address: ?u8,
     port: ?u16,
 };
