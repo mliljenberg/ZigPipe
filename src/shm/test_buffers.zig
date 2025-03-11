@@ -78,27 +78,27 @@ fn generic_test(consumer: anytype, producer: anytype) !void {
 }
 
 test "mpsc" {
-    var consumer = try MPSCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff").init();
+    var consumer = try MPSCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff-1").init();
     defer consumer.deinit();
-    var producer = try MPSCRingBuffer(TestStruct, 1000, .Producer, "/test-buff").init();
+    var producer = try MPSCRingBuffer(TestStruct, 1000, .Producer, "/test-buff-1").init();
     defer producer.deinit();
     try generic_test(&consumer, &producer);
 }
 
 test "spmc" {
     // Initialize consumer and producer
-    var producer = try SPMCRingBuffer(TestStruct, 1000, .Producer, "/test-buff").init();
+    var producer = try SPMCRingBuffer(TestStruct, 1000, .Producer, "/test-buff-2").init();
     defer producer.deinit();
-    var consumer = try SPMCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff").init();
+    var consumer = try SPMCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff-2").init();
     defer consumer.deinit();
     try generic_test(&consumer, &producer);
 }
 
 test "spsc" {
     // Initialize consumer and producer
-    var producer = try SPSCRingBuffer(TestStruct, 1000, .Producer, "/test-buff").init();
+    var producer = try SPSCRingBuffer(TestStruct, 1000, .Producer, "/test-buff-3").init();
     defer producer.deinit();
-    var consumer = try SPSCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff").init();
+    var consumer = try SPSCRingBuffer(TestStruct, 1000, .Consumer, "/test-buff-3").init();
     defer consumer.deinit();
     try generic_test(&consumer, &producer);
 }

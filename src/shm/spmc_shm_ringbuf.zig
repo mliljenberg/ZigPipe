@@ -36,14 +36,14 @@ pub fn SPMCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
 
         // Ordering is [head, tail, reserved_idx, data]
         pub fn init() !Self {
+            var shm = shared_mem.SharedMem(T, len){ .master = user_type == .Producer, .path = path };
+            const mmap = try shm.open();
+            errdefer shm.deinit();
             const header_size = @sizeOf(Atomic(u64));
             const tail_size = @sizeOf(u64);
             const current_consumers_size = @sizeOf(Atomic(u64));
             const recerved_idxs_size = header_size;
 
-            var shm = shared_mem.SharedMem(T, len){ .master = user_type == .Producer, .path = path };
-            const mmap = try shm.open();
-            errdefer shm.deinit();
             const tail: *Atomic(u64) = @ptrCast(@alignCast(mmap));
             var position: usize = header_size;
             const head: *u64 = @ptrCast(@alignCast(mmap + position));
@@ -69,7 +69,7 @@ pub fn SPMCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
         }
 
         /// Gets the tail and increases the index.
-        pub fn get_tail(self: *Self) error{Empty}!T {
+        pub fn pop(self: *Self) error{Empty}!T {
             assert(user_type == .Consumer);
 
             // a check if space available.
@@ -143,7 +143,7 @@ test "spmc" {
         thread.join();
     }
 
-    const mes = consumer.get_tail();
+    const mes = consumer.pop();
     try std.testing.expectError(error.Empty, mes);
 }
 
@@ -158,7 +158,7 @@ fn basic_consumer_test_thread() !void {
     var consumer = try SPMCRingBuffer(TestStruct, 1000, .Consumer, path).init();
     var sum: u64 = 0;
     while (count < 1000) {
-        const message = consumer.get_tail() catch {
+        const message = consumer.pop() catch {
             continue;
         };
         sum += message.id;

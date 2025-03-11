@@ -42,17 +42,17 @@ pub fn SPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
             return (self.tail_idx.* + self.len) - self.head_idx.*;
         }
 
-        pub inline fn advance_tail(self: *Self) error{NoSpaceLeft}!void {
+        pub inline fn advance_tail(self: *Self) error{Full}!void {
             comptime assert(user_type == .Consumer);
-            if (self.tail_idx.* == self.head_idx.*) return error.NoSpaceLeft;
+            if (self.tail_idx.* == self.head_idx.*) return error.Full;
             self.tail_idx.* += 1;
             assert(self.tail_idx.* <= self.head_idx.*);
         }
 
-        pub inline fn advance_tail_count(self: *Self, count: usize) error{NoSpaceLeft}!void {
+        pub inline fn advance_tail_count(self: *Self, count: usize) error{Full}!void {
             comptime assert(user_type == .Consumer);
             assert(count > 0);
-            if (self.tail_idx.* + count > self.head_idx.*) return error.NoSpaceLeft;
+            if (self.tail_idx.* + count > self.head_idx.*) return error.Full;
             self.tail_idx.* += count;
             assert(self.tail_idx.* <= self.head_idx.*);
         }
@@ -65,9 +65,9 @@ pub fn SPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
             assert((self.tail_idx.* + self.len) >= self.head_idx.*);
         }
 
-        pub inline fn advance_head_count(self: *Self, count: usize) error{NoSpaceLeft}!void {
+        pub inline fn advance_head_count(self: *Self, count: usize) error{Full}!void {
             assert(user_type == .Producer);
-            if ((self.head_idx.* + count) > self.tail_idx.* + self.len) return error.NoSpaceLeft;
+            if ((self.head_idx.* + count) > self.tail_idx.* + self.len) return error.Full;
             self.head_idx.* += count;
             assert(self.tail_idx.* + self.len <= self.head_idx.*);
         }
@@ -82,7 +82,7 @@ pub fn SPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
             return self.buffer[index % self.len];
         }
 
-        pub fn get_tail(self: *Self) error{Empty}!T {
+        pub fn pop(self: *Self) error{Empty}!T {
             if (self.tail_idx.* == self.head_idx.*) return error.Empty;
             const ret = self.get(self.tail_idx.*) catch {
                 unreachable;
@@ -111,11 +111,11 @@ pub fn SPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
         }
         // pub fn get_batch_ptr(self: *const Self, index_from: usize, index_to: usize) ?[*]T {}
 
-        pub fn push(self: *Self, item: T) error{NoSpaceLeft}!void {
+        pub fn push(self: *Self, item: T) error{Full}!void {
             assert(user_type == .Producer);
             self.overflow_fix();
             const current_head = self.head_idx.*;
-            if (self.head_idx.* == self.max_idx()) return error.NoSpaceLeft;
+            if (self.head_idx.* == self.max_idx()) return error.Full;
             self.buffer[self.head_idx.* % self.len] = item;
             self.advance_head();
             assert(self.head_idx.* <= self.max_idx());
@@ -130,7 +130,7 @@ pub fn SPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
             }
         }
 
-        pub fn push_batch(self: *Self, items: []const T) error{NoSpaceLeft}!void {
+        pub fn push_batch(self: *Self, items: []const T) error{Full}!void {
             assert(user_type == .Producer);
             // if adding to head will create overflow we reset index to remainder;
             if (self.head_idx.* >= std.math.maxInt(@TypeOf(self.head_idx.*)) - items.len) {
@@ -139,7 +139,7 @@ pub fn SPSCRingBuffer(comptime T: type, comptime len: usize, comptime user_type:
             }
 
             const requested_max_idx = self.head_idx.* + items.len;
-            if (requested_max_idx > self.max_idx()) return error.NoSpaceLeft;
+            if (requested_max_idx > self.max_idx()) return error.Full;
             const start = self.head_idx.* % self.len;
             const end = start + items.len;
 
@@ -173,10 +173,10 @@ test "basic test" {
     const TestStruct = struct {
         id: i32,
     };
-    var consumer = try SPSCRingBuffer(TestStruct, 10, UserType.Consumer, "/basic_test").init();
-    defer consumer.deinit();
     var producer = try SPSCRingBuffer(TestStruct, 10, UserType.Producer, "/basic_test").init();
     defer producer.deinit();
+    var consumer = try SPSCRingBuffer(TestStruct, 10, UserType.Consumer, "/basic_test").init();
+    defer consumer.deinit();
     try producer.push(.{ .id = 1 });
     try producer.push(.{ .id = 2 });
     const c_message = try consumer.get(0);
@@ -189,7 +189,7 @@ test "basic test" {
     try std.testing.expectError(error.IndexOutOfBounds, c_message_error);
     const mess = try consumer.get_ptr(1);
     mess.*.id = 42;
-    const check = try consumer.get_tail();
+    const check = try consumer.pop();
     try expect(check.id == 42);
 
     const new_items = [_]TestStruct{
@@ -213,21 +213,35 @@ test "basic test" {
     };
 
     try producer.push_batch(&new_items2);
+    try producer.push(.{ .id = 2 });
     const full_err = producer.push(.{ .id = 2 });
-    try std.testing.expectError(error.NoSpaceLeft, full_err);
+    try std.testing.expectError(error.Full, full_err);
 
     const full_err2 = producer.push_batch(&new_items2);
-    try std.testing.expectError(error.NoSpaceLeft, full_err2);
+    try std.testing.expectError(error.Full, full_err2);
 }
 
 test "basic threaded test" {
     const TestStruct = struct {
         id: i32,
     };
+
+    var producer = try SPSCRingBuffer(TestStruct, 10, UserType.Producer, "/basic_thread_test").init();
+
+    defer producer.deinit();
+    try producer.push(.{ .id = 1 });
+    try producer.push(.{ .id = 2 });
+
     const thread = try std.Thread.spawn(.{}, basic_thread, .{});
+    thread.join();
+}
+
+fn basic_thread() !void {
+    const TestStruct = struct {
+        id: i32,
+    };
     var consumer = try SPSCRingBuffer(TestStruct, 10, UserType.Consumer, "/basic_thread_test").init();
     defer consumer.deinit();
-    thread.join();
 
     const c_message = try consumer.get(0);
     const c_message2 = try consumer.get(1);
@@ -237,16 +251,6 @@ test "basic threaded test" {
 
     const c_message_error = consumer.get(0);
     try std.testing.expectError(error.IndexOutOfBounds, c_message_error);
-}
-
-fn basic_thread() !void {
-    const TestStruct = struct {
-        id: i32,
-    };
-    var producer = try SPSCRingBuffer(TestStruct, 10, UserType.Producer, "/basic_thread_test").init();
-    defer producer.deinit();
-    try producer.push(.{ .id = 1 });
-    try producer.push(.{ .id = 2 });
 }
 
 test "overflow test" {

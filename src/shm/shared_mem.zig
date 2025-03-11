@@ -21,14 +21,14 @@ pub fn SharedMem(comptime T: type, comptime num_items: usize) type {
     return struct {
         const Self = @This();
         path: [*:0]const u8,
-        mmap_slice: []align(mem.page_size) u8 = undefined,
+        mmap_slice: []align(std.heap.page_size_min) u8 = undefined,
         master: bool = false,
         fd: c_int = undefined,
 
         /// Creates a shared memory object. also creates the shared memory file if master is true.
         pub fn open(
             self: *Self,
-        ) SharedMemError![*]align(mem.page_size) u8 {
+        ) SharedMemError![*]align(std.heap.page_size_min) u8 {
             const path_slice = std.mem.span(self.path);
             assert(!std.mem.eql(u8, path_slice, ""));
             const flags: posix.O = if (self.master) .{ .CREAT = true, .ACCMODE = .RDWR, .TRUNC = true } else .{ .ACCMODE = .RDWR };
