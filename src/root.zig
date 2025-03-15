@@ -17,6 +17,7 @@ const Message = struct {};
 threadlocal var worker: ?u8 = null;
 threadlocal var role: Role = .not_connected;
 const mpsc_path = "/mpsc_buffer";
+const spmc_path = "/spmc_buffer";
 
 const StateMachine = enum {
     const Self = @This();
@@ -39,9 +40,9 @@ export fn init() !void {
         return error.AlreadyConnectedToCluster;
     }
     role = .master;
-    var mspc_buffer = try MPSCRingBuffer(Message, 1000, .Consumer, mpsc_path).init();
-    defer mspc_buffer.deinit();
-    var spmc_buffer = try SPMCRingBuffer(Message, 1000, .Producer, mpsc_path).init();
+    var mpsc_buffer = try MPSCRingBuffer(Message, 1000, .Consumer, mpsc_path).init();
+    defer mpsc_buffer.deinit();
+    var spmc_buffer = try SPMCRingBuffer(Message, 1000, .Producer, spmc_path).init();
     defer spmc_buffer.deinit();
     var buffer = RingBufferType(Message, 1000);
 
@@ -59,9 +60,9 @@ export fn init() !void {
                 sleep_counter = 0;
             }
         } else if (!buffer.full) {
-            if (mspc_buffer.pop()) |item| {
+            if (mpsc_buffer.pop()) |item| {
                 buffer.push(item);
-                mspc_buffer.advance_tail();
+                mpsc_buffer.advance_tail();
                 sleep_counter = 0;
             } else |err| {
                 //buffer is empty
