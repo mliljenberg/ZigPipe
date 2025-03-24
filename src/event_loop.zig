@@ -6,6 +6,12 @@ const posix = std.posix;
 const linux = os.linux;
 const io_uring_cqe = linux.io_uring_cqe;
 const io_uring_sqe = linux.io_uring_sqe;
+const fd_t = posix.fd_t;
+
+const Actions = enum {
+    openat,
+    write,
+};
 
 const Timeout = struct {
     const Self = @This();
@@ -39,8 +45,20 @@ const Events = struct {
     }
 
     fn fastPrint(self: *Self) !void {
-        print("fast printing {}\n", .{self.fast_ticker.current_tick});
         self.fast_ticker.current_tick = 0;
+        const cqe = self.io.ring.copy_cqe() catch {
+            print("No cqe", .{});
+            return;
+        };
+        const a: Actions = @enumFromInt(cqe.user_data);
+
+        if (cqe.res <= 0) std.debug.print("\ncqe_openat.res={}\n", .{cqe.res});
+        print("CQE: {}\n{any}\n", .{ a, cqe.res });
+        const fd: fd_t = @intCast(cqe.res);
+        const sqe = try self.io.ring.get_sqe();
+        sqe.prep_write(fd, "Hello, World!", 0);
+        sqe.user_data = @intFromEnum(Actions.write);
+        _ = try self.io.ring.submit();
     }
 
     fn createFile(_: *Self, sqe: *io_uring_sqe, comptime filename: []const u8) void {
@@ -53,6 +71,7 @@ const Events = struct {
             flags,
             mode,
         );
+        sqe.user_data = @intFromEnum(Actions.openat);
     }
 
     fn writeToFile(_: *Self, sqe: *io_uring_sqe) void {
@@ -64,7 +83,7 @@ const Events = struct {
     pub fn init(io: *IO) Self {
         return .{
             .io = io,
-            .fast_ticker = .{ .name = "fast_ticker", .threashold = 5, .current_tick = 0 },
+            .fast_ticker = .{ .name = "fast_ticker", .threashold = 11, .current_tick = 0 },
             .slow_ticker = .{ .name = "slow_ticker", .threashold = 10, .current_tick = 0 },
         };
     }
