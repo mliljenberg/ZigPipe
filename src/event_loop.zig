@@ -6,7 +6,9 @@ const posix = std.posix;
 const linux = os.linux;
 const io_uring_cqe = linux.io_uring_cqe;
 const io_uring_sqe = linux.io_uring_sqe;
+const IO = @import("./io.zig").IO;
 const fd_t = posix.fd_t;
+pub const socket_t = posix.socket_t;
 
 const Actions = enum {
     openat,
@@ -37,11 +39,15 @@ const Events = struct {
     fn slowPrint(self: *Self) !void {
         print("slow printing {}\n", .{self.slow_ticker.current_tick});
         self.slow_ticker.current_tick = 0;
-        var sqe = try self.io.ring.get_sqe();
-        self.createFile(sqe, "test1");
-        sqe = try self.io.ring.get_sqe();
-        self.createFile(sqe, "test2");
-        _ = try self.io.ring.submit();
+        const fd = std.fs.cwd().fd;
+        const flags: linux.O = .{ .CLOEXEC = true, .ACCMODE = .RDWR, .CREAT = true };
+        const mode: posix.mode_t = 0o666;
+        sqe.prep_openat(
+            fd,
+            filename ++ ".txt",
+            flags,
+            mode,
+        );
     }
 
     fn fastPrint(self: *Self) !void {
@@ -111,24 +117,11 @@ const Events = struct {
     }
 };
 
-const IO = struct {
-    ring: IO_Uring,
-
-    pub fn init() !IO {
-        return IO{ .ring = try IO_Uring.init(32, 0) };
-    }
-    pub fn run_for_ns(_: *IO, ns: u64) void {
-        _ = ns;
-        std.Thread.sleep(100_000_000);
-        //Do tigerbeetle io stuff??
-    }
-};
-
 pub fn main() !void {
-    var io = try IO.init();
+    var io = try IO.init(32, 0);
     var events = Events.init(&io);
     while (true) {
         try events.tick();
-        io.run_for_ns(1000);
+        try io.run_for_ns(100);
     }
 }
