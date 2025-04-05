@@ -20,86 +20,130 @@ const Timeout = struct {
     name: []const u8,
     threashold: usize,
     current_tick: usize,
+    fired_once: bool = false,
 
     fn tick(self: *Self) void {
         self.current_tick += 1;
     }
 
     fn fired(self: *Self) bool {
-        return self.current_tick >= self.threashold;
+        if (self.fired_once) {
+            return false;
+        }
+        if (self.current_tick >= self.threashold) {
+            self.fired_once = true;
+            return true;
+        }
+        return false;
     }
 };
 
 const Events = struct {
     const Self = @This();
     io: *IO,
-    fast_ticker: Timeout,
     slow_ticker: Timeout,
+    done: bool,
+    open_completion: IO.Completion = undefined,
+    write_completion: IO.Completion = undefined,
 
-    fn slowPrint(self: *Self) !void {
-        print("slow printing {}\n", .{self.slow_ticker.current_tick});
-        self.slow_ticker.current_tick = 0;
+    fn done_callback(
+        self: *Self,
+        completion: *IO.Completion,
+        result: IO.WriteError!usize,
+    ) void {
+        print("Write done: {any}\n", .{result});
+        _ = completion;
+        _ = result catch @panic("Write error");
+        self.done = true;
+    }
+
+    fn write_callback(self: *Self, completion: *IO.Completion, result: anyerror!posix.fd_t) void {
+        const fd = result catch @panic("Failed to open file");
+        print("yey wrote to file here is fd: {!}\n", .{fd});
+        self.io.write(
+            *Self,
+            self,
+            done_callback,
+            completion,
+            fd,
+            "Hello world!",
+            0,
+        );
+    }
+
+    fn open(self: *Self) !void {
+        print("Opening file...\n", .{});
         const fd = std.fs.cwd().fd;
+        const filename = "test_completion.txt";
+
         const flags: linux.O = .{ .CLOEXEC = true, .ACCMODE = .RDWR, .CREAT = true };
         const mode: posix.mode_t = 0o666;
-        sqe.prep_openat(
+        self.io.openat(
+            *Self,
+            self,
+            write_callback,
+            &self.open_completion,
             fd,
-            filename ++ ".txt",
+            filename,
             flags,
             mode,
         );
     }
 
-    fn fastPrint(self: *Self) !void {
-        self.fast_ticker.current_tick = 0;
-        const cqe = self.io.ring.copy_cqe() catch {
-            print("No cqe", .{});
-            return;
-        };
-        const a: Actions = @enumFromInt(cqe.user_data);
+    // fn fastPrint(self: *Self) !void {
+    //     self.fast_ticker.current_tick = 0;
+    //     const cqe = self.io.ring.copy_cqe() catch {
+    //         print("No cqe", .{});
+    //         return;
+    //     };
+    //     const a: Actions = @enumFromInt(cqe.user_data);
+    //
+    //     if (cqe.res <= 0) std.debug.print("\ncqe_openat.res={}\n", .{cqe.res});
+    //     print("CQE: {}\n{any}\n", .{ a, cqe.res });
+    //     const fd: fd_t = @intCast(cqe.res);
+    //     const sqe = try self.io.ring.get_sqe();
+    //     sqe.prep_write(fd, "Hello, World!", 0);
+    //     sqe.user_data = @intFromEnum(Actions.write);
+    //     _ = try self.io.ring.submit();
+    // }
 
-        if (cqe.res <= 0) std.debug.print("\ncqe_openat.res={}\n", .{cqe.res});
-        print("CQE: {}\n{any}\n", .{ a, cqe.res });
-        const fd: fd_t = @intCast(cqe.res);
-        const sqe = try self.io.ring.get_sqe();
-        sqe.prep_write(fd, "Hello, World!", 0);
-        sqe.user_data = @intFromEnum(Actions.write);
-        _ = try self.io.ring.submit();
-    }
+    // fn createFile(self: *Self, sqe: *io_uring_sqe, comptime filename: []const u8) void {
+    //     const fd = std.fs.cwd().fd;
+    //     const comp: IO.Completion = .{
+    //         .io = self.io,
+    //         .callback = self.write,
+    //         .context = self,
+    //         .operation = .openat,
+    //     };
+    //     self.io.enqueue(comp);
+    //     const flags: linux.O = .{ .CLOEXEC = true, .ACCMODE = .RDWR, .CREAT = true };
+    //     const mode: posix.mode_t = 0o666;
+    //     sqe.prep_openat(
+    //         fd,
+    //         filename ++ ".txt",
+    //         flags,
+    //         mode,
+    //     );
+    //     sqe.user_data = @intFromEnum(Actions.openat);
+    // }
 
-    fn createFile(_: *Self, sqe: *io_uring_sqe, comptime filename: []const u8) void {
-        const fd = std.fs.cwd().fd;
-        const flags: linux.O = .{ .CLOEXEC = true, .ACCMODE = .RDWR, .CREAT = true };
-        const mode: posix.mode_t = 0o666;
-        sqe.prep_openat(
-            fd,
-            filename ++ ".txt",
-            flags,
-            mode,
-        );
-        sqe.user_data = @intFromEnum(Actions.openat);
-    }
-
-    fn writeToFile(_: *Self, sqe: *io_uring_sqe) void {
-        const fd = std.fs.cwd();
-        const buf = "Hello, World!";
-        sqe.prep_write(fd, buf, buf.len, 0);
-    }
+    // fn writeToFile(_: *Self, sqe: *io_uring_sqe) void {
+    //     const fd = std.fs.cwd();
+    //     const buf = "Hello, World!";
+    //     sqe.prep_write(fd, buf, buf.len, 0);
+    // }
 
     pub fn init(io: *IO) Self {
         return .{
             .io = io,
-            .fast_ticker = .{ .name = "fast_ticker", .threashold = 11, .current_tick = 0 },
-            .slow_ticker = .{ .name = "slow_ticker", .threashold = 10, .current_tick = 0 },
+            .slow_ticker = .{ .name = "slow_ticker", .threashold = 11, .current_tick = 0 },
+            .done = false,
         };
     }
     pub fn tick(self: *Self) !void {
         const timeouts = .{
             .{
-                &self.fast_ticker, fastPrint,
-            },
-            .{
-                &self.slow_ticker, slowPrint,
+                &self.slow_ticker, open,
             },
         };
         // Check tasks completed from callback?
@@ -120,8 +164,8 @@ const Events = struct {
 pub fn main() !void {
     var io = try IO.init(32, 0);
     var events = Events.init(&io);
-    while (true) {
+    while (!events.done) {
         try events.tick();
-        try io.run_for_ns(100);
+        try io.tick();
     }
 }
