@@ -6,7 +6,7 @@ const posix = std.posix;
 const linux = os.linux;
 const io_uring_cqe = linux.io_uring_cqe;
 const io_uring_sqe = linux.io_uring_sqe;
-const IO = @import("./io.zig").IO;
+const IO = @import("./tigerbeetle/io.zig").IO;
 const fd_t = posix.fd_t;
 pub const socket_t = posix.socket_t;
 

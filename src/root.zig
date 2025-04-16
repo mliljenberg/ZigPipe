@@ -53,6 +53,7 @@ export fn init() !void {
             print_err("Seems like we are in a deadlock");
             return error.DeadLockError; // FIXME: How can we handle this error?
         }
+        // Somewhere we want to handle the messages, try to fill up the io queue and then wait for next tick to end. Then start with handling completions.
         if (!spmc_buffer.full() and !buffer.empty()) {
             if (buffer.head()) |item| {
                 spmc_buffer.push(item);

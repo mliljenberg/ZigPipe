@@ -216,7 +216,6 @@ pub const IO = struct {
             };
             if (completed > wait_remaining) wait_remaining = 0 else wait_remaining -= completed;
             for (cqes[0..completed]) |cqe| {
-                std.debug.print("ios: {}\n", .{self.ios_in_kernel});
                 self.ios_in_kernel -= 1;
 
                 if (cqe.user_data == 0) {
